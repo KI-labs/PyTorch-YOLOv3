@@ -1,5 +1,7 @@
 from __future__ import division
 
+import json
+
 from models import *
 from utils.logger import *
 from utils.utils import *
@@ -10,15 +12,15 @@ from test import evaluate
 from terminaltables import AsciiTable
 
 import os
-import sys
+# import sys
 import time
 import datetime
 import argparse
 
 import torch
 from torch.utils.data import DataLoader
-from torchvision import datasets
-from torchvision import transforms
+# from torchvision import datasets
+# from torchvision import transforms
 from torch.autograd import Variable
 import torch.optim as optim
 
@@ -33,7 +35,9 @@ if __name__ == "__main__":
     parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
     parser.add_argument("--img_size", type=int, default=416, help="size of each image dimension")
     parser.add_argument("--checkpoint_interval", type=int, default=1, help="interval between saving model weights")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints", help="directory for saving checkpoints")
     parser.add_argument("--evaluation_interval", type=int, default=1, help="interval evaluations on validation set")
+    parser.add_argument("--evaluation_dir", type=str, default="metrics", help="directory for saving metrics")
     parser.add_argument("--compute_map", default=False, help="if True computes mAP every tenth batch")
     parser.add_argument("--multiscale_training", default=True, help="allow for multi-scale training")
     opt = parser.parse_args()
@@ -43,8 +47,9 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    os.makedirs("output", exist_ok=True)
-    os.makedirs("checkpoints", exist_ok=True)
+    # output directory (kaos)
+    os.makedirs(opt.evaluation_dir, exist_ok=True)
+    os.makedirs(opt.checkpoint_dir, exist_ok=True)
 
     # Get data configuration
     data_config = parse_data_config(opt.data_config)
@@ -126,14 +131,14 @@ if __name__ == "__main__":
                 row_metrics = [formats[metric] % yolo.metrics.get(metric, 0) for yolo in model.yolo_layers]
                 metric_table += [[metric, *row_metrics]]
 
-                # Tensorboard logging
-                tensorboard_log = []
-                for j, yolo in enumerate(model.yolo_layers):
-                    for name, metric in yolo.metrics.items():
-                        if name != "grid_size":
-                            tensorboard_log += [(f"{name}_{j+1}", metric)]
-                tensorboard_log += [("loss", loss.item())]
-                logger.list_of_scalars_summary(tensorboard_log, batches_done)
+                # # Tensorboard logging
+                # tensorboard_log = []
+                # for j, yolo in enumerate(model.yolo_layers):
+                #     for name, metric in yolo.metrics.items():
+                #         if name != "grid_size":
+                #             tensorboard_log += [(f"{name}_{j+1}", metric)]
+                # tensorboard_log += [("loss", loss.item())]
+                # logger.list_of_scalars_summary(tensorboard_log, batches_done)
 
             log_str += AsciiTable(metric_table).table
             log_str += f"\nTotal loss {loss.item()}"
@@ -174,5 +179,15 @@ if __name__ == "__main__":
             print(AsciiTable(ap_table).table)
             print(f"---- mAP {AP.mean()}")
 
+            # metrics formatting (kaos)
+            out = {
+                "val_precision", precision.mean(),
+                "val_recall", recall.mean(),
+                "val_mAP", AP.mean(),
+                "val_f1", f1.mean(),
+            }
+            with open(f"{opt.evaluation_dir}/metrics_{epoch:02}.json", 'w') as fp:
+                json.dump(out, fp, indent=4, sort_keys=True)
+
         if epoch % opt.checkpoint_interval == 0:
-            torch.save(model.state_dict(), f"checkpoints/yolov3_ckpt_%d.pth" % epoch)
+            torch.save(model.state_dict(), f"{opt.checkpoint_dir}/yolov3_ckpt_{epoch:02}.pth")
