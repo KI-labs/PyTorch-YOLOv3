@@ -1,9 +1,10 @@
-from __future__ import division
+import os
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import json
-
+import shutil
 from models import *
-from utils.logger import *
 from utils.utils import *
 from utils.datasets import *
 from utils.parse_config import *
@@ -11,16 +12,12 @@ from test import evaluate
 
 from terminaltables import AsciiTable
 
-import os
-# import sys
 import time
 import datetime
 import argparse
 
 import torch
 from torch.utils.data import DataLoader
-# from torchvision import datasets
-# from torchvision import transforms
 from torch.autograd import Variable
 import torch.optim as optim
 
@@ -29,33 +26,27 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=100, help="number of epochs")
     parser.add_argument("--batch_size", type=int, default=8, help="size of each image batch")
     parser.add_argument("--gradient_accumulations", type=int, default=2, help="number of gradient accums before step")
-    parser.add_argument("--model_def", type=str, default="config/yolov3.cfg", help="path to model definition file")
-    parser.add_argument("--data_config", type=str, default="config/coco.data", help="path to data config file")
+    parser.add_argument("--model_def", type=str, help="path to model definition file", required=True)
+    parser.add_argument("--data_config", type=str, help="path to data config file", required=True)
+    parser.add_argument("--class_config", type=str, help="path to model definition file", required=True)
     parser.add_argument("--pretrained_weights", type=str, help="if specified starts from checkpoint model")
     parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
     parser.add_argument("--img_size", type=int, default=416, help="size of each image dimension")
     parser.add_argument("--checkpoint_interval", type=int, default=1, help="interval between saving model weights")
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints", help="directory for saving checkpoints")
-    parser.add_argument("--evaluation_interval", type=int, default=1, help="interval evaluations on validation set")
-    parser.add_argument("--evaluation_dir", type=str, default="metrics", help="directory for saving metrics")
+    parser.add_argument("--evaluation_interval", type=int, default=5, help="interval evaluations on validation set")
+    parser.add_argument("--output_dir", type=str, default="./output", help="directory for saving output")
     parser.add_argument("--compute_map", default=False, help="if True computes mAP every tenth batch")
-    parser.add_argument("--multiscale_training", default=True, help="allow for multi-scale training")
+    parser.add_argument("--multiscale_training", default=False, help="allow for multi-scale training")
     opt = parser.parse_args()
     print(opt)
 
-    logger = Logger("logs")
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # output directory (kaos)
-    os.makedirs(opt.evaluation_dir, exist_ok=True)
-    os.makedirs(opt.checkpoint_dir, exist_ok=True)
 
     # Get data configuration
     data_config = parse_data_config(opt.data_config)
     train_path = data_config["train"]
     valid_path = data_config["valid"]
-    class_names = load_classes(data_config["names"])
+    class_names = load_classes(opt.class_config)
 
     # Initiate model
     model = Darknet(opt.model_def).to(device)
@@ -98,11 +89,11 @@ if __name__ == "__main__":
         "conf_noobj",
     ]
 
-    for epoch in range(opt.epochs):
+    for epoch in range(1, opt.epochs + 1):
         model.train()
         start_time = time.time()
         for batch_i, (_, imgs, targets) in enumerate(dataloader):
-            batches_done = len(dataloader) * epoch + batch_i
+            batches_done = len(dataloader) * (epoch - 1) + batch_i
 
             imgs = Variable(imgs.to(device))
             targets = Variable(targets.to(device), requires_grad=False)
@@ -119,7 +110,7 @@ if __name__ == "__main__":
             #   Log progress
             # ----------------
 
-            log_str = "\n---- [Epoch %d/%d, Batch %d/%d] ----\n" % (epoch, opt.epochs, batch_i, len(dataloader))
+            log_str = "\n---- [Epoch %d/%d, Batch %d/%d] ----\n" % (epoch, opt.epochs, batch_i + 1, len(dataloader))
 
             metric_table = [["Metrics", *[f"YOLO Layer {i}" for i in range(len(model.yolo_layers))]]]
 
@@ -130,15 +121,6 @@ if __name__ == "__main__":
                 formats["cls_acc"] = "%.2f%%"
                 row_metrics = [formats[metric] % yolo.metrics.get(metric, 0) for yolo in model.yolo_layers]
                 metric_table += [[metric, *row_metrics]]
-
-                # # Tensorboard logging
-                # tensorboard_log = []
-                # for j, yolo in enumerate(model.yolo_layers):
-                #     for name, metric in yolo.metrics.items():
-                #         if name != "grid_size":
-                #             tensorboard_log += [(f"{name}_{j+1}", metric)]
-                # tensorboard_log += [("loss", loss.item())]
-                # logger.list_of_scalars_summary(tensorboard_log, batches_done)
 
             log_str += AsciiTable(metric_table).table
             log_str += f"\nTotal loss {loss.item()}"
@@ -152,25 +134,18 @@ if __name__ == "__main__":
 
             model.seen += imgs.size(0)
 
-        if epoch % opt.evaluation_interval == 0:
+        if (epoch % opt.evaluation_interval) == 0:
             print("\n---- Evaluating Model ----")
             # Evaluate the model on the validation set
             precision, recall, AP, f1, ap_class = evaluate(
                 model,
                 path=valid_path,
                 iou_thres=0.5,
-                conf_thres=0.5,
+                conf_thres=0.15,
                 nms_thres=0.5,
                 img_size=opt.img_size,
-                batch_size=8,
+                batch_size=opt.batch_size,
             )
-            evaluation_metrics = [
-                ("val_precision", precision.mean()),
-                ("val_recall", recall.mean()),
-                ("val_mAP", AP.mean()),
-                ("val_f1", f1.mean()),
-            ]
-            logger.list_of_scalars_summary(evaluation_metrics, epoch)
 
             # Print class APs and mAP
             ap_table = [["Index", "Class name", "AP"]]
@@ -181,13 +156,20 @@ if __name__ == "__main__":
 
             # metrics formatting (kaos)
             out = {
-                "val_precision", precision.mean(),
-                "val_recall", recall.mean(),
-                "val_mAP", AP.mean(),
-                "val_f1", f1.mean(),
+                "precision": precision.mean(),
+                "recall": recall.mean(),
+                "mAP": AP.mean(),
+                "f1": f1.mean(),
             }
-            with open(f"{opt.evaluation_dir}/metrics_{epoch:02}.json", 'w') as fp:
+
+            pather = os.path.join(opt.output_dir, f"{epoch:05}", "metrics")
+            os.makedirs(pather, exist_ok=True)
+            with open(os.path.join(pather, "metrics.json"), 'w') as fp:
                 json.dump(out, fp, indent=4, sort_keys=True)
 
-        if epoch % opt.checkpoint_interval == 0:
-            torch.save(model.state_dict(), f"{opt.checkpoint_dir}/yolov3_ckpt_{epoch:02}.pth")
+        if (epoch % opt.checkpoint_interval) == 0:
+            pather = os.path.join(opt.output_dir, f"{epoch:05}", "model")
+            os.makedirs(pather, exist_ok=True)
+            shutil.copy2(opt.class_config, os.path.join(pather, os.path.split(opt.class_config)[-1]))
+            shutil.copy2(opt.model_def, os.path.join(pather, os.path.split(opt.model_def)[-1]))
+            torch.save(model.state_dict(), os.path.join(pather, f"model_{epoch:05}.pth"))

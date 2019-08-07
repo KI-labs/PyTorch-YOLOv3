@@ -1,25 +1,14 @@
 from __future__ import division
 
-from models import *
-from utils.utils import *
-from utils.datasets import *
-
-import os
-import sys
-import time
-import datetime
 import argparse
+import json
 
-from PIL import Image
-
-import torch
-from torch.utils.data import DataLoader
-from torchvision import datasets
 from torch.autograd import Variable
+from torch.utils.data import DataLoader
 
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.ticker import NullLocator
+from models import *
+from utils.datasets import *
+from utils.utils import *
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -32,7 +21,6 @@ if __name__ == "__main__":
     parser.add_argument("--n_cpu", type=int, default=0, help="number of cpu threads to use during batch generation")
     parser.add_argument("--img_size", type=int, default=416, help="size of each image dimension")
     opt = parser.parse_args()
-    print(opt)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -59,16 +47,28 @@ if __name__ == "__main__":
 
     Tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
 
-    print("\nPerforming object detection:")
-    img_paths, input_imgs = dataloader
-    # Configure input
-    input_imgs = Variable(input_imgs.type(Tensor))
+    for (img_path, input_img) in dataloader:
 
-    # Get detections
-    with torch.no_grad():
-        detections = model(input_imgs)
-        detections = non_max_suppression(detections, opt.conf_thres, opt.nms_thres)
-        print(detections)
+        # Configure input
+        input_img = Variable(input_img.type(Tensor))
 
-    # with open(f"{opt.evaluation_dir}/metrics_{epoch:02}.json", 'w') as fp:
-    #     json.dump(out, fp, indent=4, sort_keys=True)
+        # Get detections
+        with torch.no_grad():
+            detections = model(input_img)
+            detections = non_max_suppression(detections, opt.conf_thres, opt.nms_thres)
+
+        # determine original image size
+        img = Image.open(img_path[0])
+
+        # format prediction
+        out = []
+        for detection in detections:
+            detections = rescale_boxes(detection, opt.img_size, img.size[::-1])
+            for x1, y1, x2, y2, conf, cls_conf, cls_pred in detection.tolist():
+                out.append({
+                    "x1": x1, "y1": y1, "x2": x2, "y2": y2, "conf": conf, "cls_conf": cls_conf,
+                    "cls": classes[int(cls_pred)]
+                })
+
+        with open(f"bbox.json", 'w') as fp:
+            json.dump(out, fp, indent=4, sort_keys=True)

@@ -1,9 +1,6 @@
-numpy
-torch>=1.0
-torchvision
-matplotlib
-tensorflow
-tensorboard
-terminaltables
-pillow
-tqdm
+numpy==1.17.0
+torch==1.1.0
+torchvision==0.3.0
+terminaltables==3.1.0
+Pillow==6.1.0
+tqdm==4.32.2
